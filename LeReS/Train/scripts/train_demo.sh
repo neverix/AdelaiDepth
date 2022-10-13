@@ -1,6 +1,6 @@
 export PYTHONPATH=../../Train:${PYTHONPATH}
 
-python ../tools/train.py \
+python3.9 ../tools/train.py \
 --dataroot datasets \
 --backbone resnet50 \
 --dataset_list demo \

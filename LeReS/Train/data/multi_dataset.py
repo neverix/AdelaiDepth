@@ -8,6 +8,7 @@ import torchvision.transforms as transforms
 from torch.utils.data import Dataset
 from PIL import Image
 from imgaug import augmenters as iaa
+import pyrendertest
 
 from lib.configs.config import cfg
 
@@ -28,15 +29,24 @@ class MultiDataset(Dataset):
         self.data_size = len(self.all_annos)
         self.focal_length_dict = {'diml_ganet': 1380.0 / 2.0, 'taskonomy': 512.0, 'online': 256.0,
                                   'apolloscape2': 2304.0 / 2.0, '3d-ken-burns': 512.0}
+        self._prt = None
+
+    @property
+    def prt(self):
+        if self._prt is None:
+            self._prt = pyrendertest.DepthCrusher(
+                cfg.DATASET.CROP_SIZE[0], cfg.DATASET.CROP_SIZE[1])
+        return self._prt
 
     def getData(self):
-        with open(self.dir_anno, 'r') as load_f:
+        with open(self.dir_anno, "r") as load_f:
             all_annos = json.load(load_f)
 
-        curriculum_list = list(np.random.choice(len(all_annos), len(all_annos), replace=False))
+        curriculum_list = list(np.random.choice(
+            len(all_annos), len(all_annos), replace=False))
 
         rgb_paths = [
-            os.path.join(cfg.ROOT_DIR, self.root, all_annos[i]['rgb_path']) 
+            os.path.join(cfg.ROOT_DIR, self.root, all_annos[i]['rgb_path'])
             for i in range(len(all_annos))
         ]
         depth_paths = [
@@ -53,8 +63,9 @@ class MultiDataset(Dataset):
         ]
         mask_paths = [
             (
-                os.path.join(cfg.ROOT_DIR, self.root, all_annos[i]['mask_path'])
-                if all_annos[i]['mask_path'] is not None 
+                os.path.join(cfg.ROOT_DIR, self.root,
+                             all_annos[i]['mask_path'])
+                if all_annos[i]['mask_path'] is not None
                 else None
             )
             if 'mask_path' in all_annos[i]
@@ -63,8 +74,9 @@ class MultiDataset(Dataset):
         ]
         ins_paths = [
             (
-                os.path.join(cfg.ROOT_DIR, self.root, all_annos[i]['ins_planes_path'])
-                if all_annos[i]['ins_planes_path'] is not None 
+                os.path.join(cfg.ROOT_DIR, self.root,
+                             all_annos[i]['ins_planes_path'])
+                if all_annos[i]['ins_planes_path'] is not None
                 else None
             )
             if 'ins_planes_path' in all_annos[i]
@@ -78,7 +90,7 @@ class MultiDataset(Dataset):
                 else None
             )
             for i in range(len(all_annos))
-        ] # [f, cx, cy]
+        ]  # [f, cx, cy]
 
         return rgb_paths, depth_paths, disp_paths, mask_paths, ins_paths, cam_intrinsics, all_annos, curriculum_list
 
@@ -98,17 +110,18 @@ class MultiDataset(Dataset):
         rgb_path = self.rgb_paths[anno_index]
 
         rgb = cv2.imread(rgb_path)[:, :, ::-1]  # bgr, H*W*C
-        depth, sky_mask, mask_valid = self.load_depth(anno_index, rgb)
+        depth, mask_valid, d, m = self.load_depth(anno_index, rgb)
 
         rgb_resize = cv2.resize(rgb, (cfg.DATASET.CROP_SIZE[1], cfg.DATASET.CROP_SIZE[0]),
-                              interpolation=cv2.INTER_LINEAR)
+                                interpolation=cv2.INTER_LINEAR)
         # to torch, normalize
         rgb_torch = self.scale_torch(rgb_resize.copy())
         # normalize disp and depth
         depth_normal = depth / (depth.max() + 1e-8)
         depth_normal[~mask_valid.astype(np.bool)] = 0
 
-        data = {'rgb': rgb_torch, 'gt_depth': depth_normal}
+        data = {"rgb": rgb_torch, "gt_depth": depth_normal,
+                "cond_depth": d, "cond_depth_mask": m}
         return data
 
     def online_aug(self, anno_index):
@@ -121,25 +134,31 @@ class MultiDataset(Dataset):
         rgb = cv2.imread(rgb_path)[:, :, ::-1]   # rgb, H*W*C
 
         disp, depth, \
-        invalid_disp, invalid_depth, \
-        ins_planes_mask, sky_mask, \
-        ground_mask, depth_path = self.load_training_data(anno_index, rgb)
+            invalid_disp, invalid_depth, \
+            ins_planes_mask, sky_mask, \
+            ground_mask, depth_path = self.load_training_data(anno_index, rgb)
+
         rgb_aug = self.rgb_aug(rgb)
 
         # resize rgb, depth, disp
-        flip_flg, resize_size, crop_size, pad, resize_ratio = self.set_flip_resize_crop_pad(rgb_aug)
+        flip_flg, resize_size, crop_size, pad, resize_ratio = self.set_flip_resize_crop_pad(
+            rgb_aug)
 
         # focal length
         cam_intrinsic = self.cam_intrinsics[anno_index] if self.cam_intrinsics[anno_index] is not None \
-                        else [float(self.focal_length_dict[self.dataset_name.lower()]), cfg.DATASET.CROP_SIZE[1] / 2, cfg.DATASET.CROP_SIZE[0] / 2] if self.dataset_name.lower() in self.focal_length_dict \
-                        else [256.0, cfg.DATASET.CROP_SIZE[1] / 2, cfg.DATASET.CROP_SIZE[0] / 2]
-        focal_length = cam_intrinsic[0] * (resize_size[0] + resize_size[1]) / ((cam_intrinsic[1] + cam_intrinsic[2]) * 2)
+            else [float(self.focal_length_dict[self.dataset_name.lower()]), cfg.DATASET.CROP_SIZE[1] / 2, cfg.DATASET.CROP_SIZE[0] / 2] if self.dataset_name.lower() in self.focal_length_dict \
+            else [256.0, cfg.DATASET.CROP_SIZE[1] / 2, cfg.DATASET.CROP_SIZE[0] / 2]
+        focal_length = cam_intrinsic[0] * (resize_size[0] + resize_size[1]) / (
+            (cam_intrinsic[1] + cam_intrinsic[2]) * 2)
         focal_length = focal_length * resize_ratio
         focal_length = float(focal_length)
 
-        rgb_resize = self.flip_reshape_crop_pad(rgb_aug, flip_flg, resize_size, crop_size, pad, 0)
-        depth_resize = self.flip_reshape_crop_pad(depth, flip_flg, resize_size, crop_size, pad, -1, resize_method='nearest')
-        disp_resize = self.flip_reshape_crop_pad(disp, flip_flg, resize_size, crop_size, pad, -1, resize_method='nearest')
+        rgb_resize = self.flip_reshape_crop_pad(
+            rgb_aug, flip_flg, resize_size, crop_size, pad, 0)
+        depth_resize = self.flip_reshape_crop_pad(
+            depth, flip_flg, resize_size, crop_size, pad, -1, resize_method='nearest')
+        disp_resize = self.flip_reshape_crop_pad(
+            disp, flip_flg, resize_size, crop_size, pad, -1, resize_method='nearest')
 
         # resize sky_mask, and invalid_regions
         sky_mask_resize = self.flip_reshape_crop_pad(sky_mask.astype(np.uint8),
@@ -164,7 +183,8 @@ class MultiDataset(Dataset):
                                                           0,
                                                           resize_method='nearest')
         # resize ins planes
-        ins_planes_mask[ground_mask] = int(np.unique(ins_planes_mask).max() + 1)
+        ins_planes_mask[ground_mask] = int(
+            np.unique(ins_planes_mask).max() + 1)
         ins_planes_mask_resize = self.flip_reshape_crop_pad(ins_planes_mask.astype(np.uint8),
                                                             flip_flg,
                                                             resize_size,
@@ -178,14 +198,33 @@ class MultiDataset(Dataset):
         disp_resize = disp_resize / (disp_resize.max() + 1e-8) * 10
 
         # invalid regions are set to -1, sky regions are set to 0 in disp and 10 in depth
-        disp_resize[invalid_disp_resize.astype(np.bool) | (disp_resize > 1e7) | (disp_resize < 0)] = -1
-        depth_resize[invalid_depth_resize.astype(np.bool) | (depth_resize > 1e7) | (depth_resize < 0)] = -1
+        disp_resize[invalid_disp_resize.astype(np.bool) | (
+            disp_resize > 1e7) | (disp_resize < 0)] = -1
+        depth_resize[invalid_depth_resize.astype(np.bool) | (
+            depth_resize > 1e7) | (depth_resize < 0)] = -1
         disp_resize[sky_mask_resize.astype(np.bool)] = 0  # 0
         depth_resize[sky_mask_resize.astype(np.bool)] = 20
+
+        a = np.random.uniform(10, 30)
+        b = np.random.uniform(1, 10)
+        depth_n = a + depth_resize * b
+        # print((depth_norm.shape, depth_norm.dtype), file=open(
+        # "/Users/neverix/Documents/code/py/AdelaiDepth/LeReS/Train/scripts/log1", "w"), flush=True)
+        # prt = pyrendertest.DepthCrusher()
+        # print(prt(depth_n).shape, file=open(
+        #     "/Users/neverix/Documents/code/py/AdelaiDepth/LeReS/Train/scripts/log2", "w"), flush=True)
+        # print(drange, file=open(
+        #     "/Users/neverix/Documents/code/py/AdelaiDepth/LeReS/Train/scripts/log3", "w"), flush=True)
+        # exit()
+        depth_n = self.prt(depth_n.astype(np.float32))
+        depth_n = depth_n / (depth_n.max() + 1e-8)
+        m_valid = (depth_n > 1e-8).astype(np.float32)
 
         # to torch, normalize
         rgb_torch = self.scale_torch(rgb_resize.copy())
         depth_torch = self.scale_torch(depth_resize)
+        guide_torch = self.scale_torch(depth_n)
+        m_torch = torch.from_numpy(m_valid)
         disp_torch = self.scale_torch(disp_resize)
         ins_planes = torch.from_numpy(ins_planes_mask_resize)
         focal_length = torch.tensor(focal_length)
@@ -199,15 +238,19 @@ class MultiDataset(Dataset):
 
         data = {'rgb': rgb_torch, 'depth': depth_torch, 'disp': disp_torch,
                 'A_paths': rgb_path, 'B_paths': depth_path, 'quality_flg': quality_flg,
-                'planes': ins_planes, 'focal_length': focal_length}
+                'planes': ins_planes, 'focal_length': focal_length,
+                "guide": guide_torch, "m": m_torch}
         return data
 
     def rgb_aug(self, rgb):
         # data augmentation for rgb
-        img_aug = transforms.ColorJitter(brightness=0.0, contrast=0.3, saturation=0.1, hue=0)(Image.fromarray(rgb))
+        img_aug = transforms.ColorJitter(
+            brightness=0.0, contrast=0.3, saturation=0.1, hue=0)(Image.fromarray(rgb))
         rgb_aug_gray_compress = iaa.Sequential([iaa.MultiplyAndAddToBrightness(mul=(0.6, 1.25), add=(-20, 20)),
-                                                iaa.Grayscale(alpha=(0.0, 1.0)),
-                                                iaa.JpegCompression(compression=(0, 70)),
+                                                iaa.Grayscale(
+                                                    alpha=(0.0, 1.0)),
+                                                iaa.JpegCompression(
+                                                    compression=(0, 70)),
                                                 ], random_order=True)
         rgb_aug_blur1 = iaa.AverageBlur(k=((0, 5), (0, 6)))
         rgb_aug_blur2 = iaa.MotionBlur(k=9, angle=[-45, 45])
@@ -228,16 +271,21 @@ class MultiDataset(Dataset):
         flip_prob = np.random.uniform(0.0, 1.0)
         flip_flg = True if flip_prob > 0.5 and 'train' in self.opt.phase else False
 
+        resize_size = [cfg.DATASET.CROP_SIZE[0], cfg.DATASET.CROP_SIZE[1]]
+
         # crop
+        image_h, image_w = A.shape[:2]
+        croph, cropw = np.random.randint(
+            image_h // 2, image_h + 1), np.random.randint(image_w // 2, image_w + 1)
         if 'train' in self.opt.phase:
-            image_h, image_w = A.shape[:2]
-            croph, cropw = np.random.randint(image_h // 2, image_h + 1), np.random.randint(image_w // 2, image_w + 1)
             h0 = np.random.randint(image_h - croph + 1)
             w0 = np.random.randint(image_w - cropw + 1)
             crop_size = [w0, h0, cropw, croph]
         else:
             crop_size = [0, 0, resize_size[1], resize_size[0]]
 
+        resize_ratio = (
+            cfg.DATASET.CROP_SIZE[0] + cfg.DATASET.CROP_SIZE[1]) / (cropw + croph)
         # # crop
         # start_y = 0 if resize_size[0] <= cfg.DATASET.CROP_SIZE[0] else np.random.randint(0, resize_size[0] - cfg.DATASET.CROP_SIZE[0])
         # start_x = 0 if resize_size[1] <= cfg.DATASET.CROP_SIZE[1] else np.random.randint(0, resize_size[1] - cfg.DATASET.CROP_SIZE[1])
@@ -256,8 +304,6 @@ class MultiDataset(Dataset):
         #                int(A.shape[1] * resize_ratio + 0.5)]  # [height, width]
 
         # reshape
-        resize_size = [cfg.DATASET.CROP_SIZE[0], cfg.DATASET.CROP_SIZE[1]]
-        resize_ratio = (cfg.DATASET.CROP_SIZE[0] + cfg.DATASET.CROP_SIZE[1]) / (cropw + croph)
 
         # # pad
         # pad_height = 0 if resize_size[0] > cfg.DATASET.CROP_SIZE[0] else cfg.DATASET.CROP_SIZE[0] - resize_size[0]
@@ -280,7 +326,7 @@ class MultiDataset(Dataset):
         # Flip
         if flip:
             img = np.flip(img, axis=1)
-        
+
         # Crop the image
         img_crop = img[
             crop_size[1]:crop_size[1] + crop_size[3],
@@ -289,9 +335,11 @@ class MultiDataset(Dataset):
 
         # Resize the raw image
         if resize_method == 'nearest':
-            img_resize = cv2.resize(img_crop, (resize_size[1], resize_size[0]), interpolation=cv2.INTER_NEAREST)
+            img_resize = cv2.resize(
+                img_crop, (resize_size[1], resize_size[0]), interpolation=cv2.INTER_NEAREST)
         else:
-            img_resize = cv2.resize(img_crop, (resize_size[1], resize_size[0]), interpolation=cv2.INTER_LINEAR)
+            img_resize = cv2.resize(
+                img_crop, (resize_size[1], resize_size[0]), interpolation=cv2.INTER_LINEAR)
 
         # Pad the raw image
         if len(img.shape) == 3:
@@ -367,16 +415,18 @@ class MultiDataset(Dataset):
         """
         # load depth
         depth = cv2.imread(self.depth_paths[anno_index], -1)
-        depth, mask_valid = self.preprocess_depth(depth, self.depth_paths[anno_index])
+        depth, mask_valid, d, m = self.preprocess_depth(
+            depth, self.depth_paths[anno_index])
 
         # load semantic mask, such as road, sky
         if len(self.rgb_paths) == len(self.sem_masks) and self.sem_masks[anno_index] is not None:
-            sem_mask = cv2.imread(self.sem_masks[anno_index], -1).astype(np.uint8)
+            sem_mask = cv2.imread(
+                self.sem_masks[anno_index], -1).astype(np.uint8)
         else:
             sem_mask = np.zeros(depth.shape, dtype=np.uint8)
         sky_mask = sem_mask == 17
 
-        return depth, sky_mask, mask_valid
+        return depth, mask_valid, d, m
 
     def load_training_data(self, anno_index, rgb):
         """
@@ -419,13 +469,15 @@ class MultiDataset(Dataset):
 
         # load semantic mask, such as road, sky
         if len(self.rgb_paths) == len(self.sem_masks) and self.sem_masks[anno_index] is not None:
-            sem_mask = cv2.imread(self.sem_masks[anno_index], -1).astype(np.uint8)
+            sem_mask = cv2.imread(
+                self.sem_masks[anno_index], -1).astype(np.uint8)
         else:
             sem_mask = np.zeros(disp.shape, dtype=np.uint8)
 
         # load planes mask
         if len(self.rgb_paths) == len(self.ins_paths) and self.ins_paths[anno_index] is not None:
-            ins_planes_mask = cv2.imread(self.ins_paths[anno_index], -1).astype(np.uint8)
+            ins_planes_mask = cv2.imread(
+                self.ins_paths[anno_index], -1).astype(np.uint8)
         else:
             ins_planes_mask = np.zeros(disp.shape, dtype=np.uint8)
 
@@ -436,7 +488,7 @@ class MultiDataset(Dataset):
         invalid_depth = depth < 1e-8
         return disp, depth, invalid_disp, invalid_depth, ins_planes_mask, sky_mask, road_mask, depth_path
 
-        #return disp, depth, sem_mask, depth_path, ins_planes_mask
+        # return disp, depth, sem_mask, depth_path, ins_planes_mask
 
     def preprocess_depth(self, depth, img_path):
         if 'diml' in img_path.lower():
@@ -445,12 +497,27 @@ class MultiDataset(Dataset):
             depth[depth > 23000] = 0
             drange = 23000.0
         else:
-            #depth_filter1 = depth[depth > 1e-8]
-            #drange = (depth_filter1.max() - depth_filter1.min())
+            # depth_filter1 = depth[depth > 1e-8]
+            # drange = (depth_filter1.max() - depth_filter1.min())
             drange = depth.max()
         depth_norm = depth / (drange + 1e-8)
+        depth_n = depth_norm.astype(np.float32)
+        a = np.random.uniform(10, 30)
+        b = np.random.uniform(1, 10)
+        depth_n = a + depth_n * b
+        # print((depth_norm.shape, depth_norm.dtype), file=open(
+        # "/Users/neverix/Documents/code/py/AdelaiDepth/LeReS/Train/scripts/log1", "w"), flush=True)
+        # prt = pyrendertest.DepthCrusher()
+        # print(prt(depth_n).shape, file=open(
+        #     "/Users/neverix/Documents/code/py/AdelaiDepth/LeReS/Train/scripts/log2", "w"), flush=True)
+        # print(drange, file=open(
+        #     "/Users/neverix/Documents/code/py/AdelaiDepth/LeReS/Train/scripts/log3", "w"), flush=True)
+        # exit()
+        depth_n = self.prt(depth_n)
+        depth_n = depth_n / (depth_n.max() + 1e-8)
         mask_valid = (depth_norm > 1e-8).astype(np.float)
-        return depth_norm, mask_valid
+        m_valid = (depth_n > 1e-8).astype(np.float)
+        return depth_norm, mask_valid, depth_n, m_valid
 
     def loading_check(self, depth, depth_path):
         if 'taskonomy' in depth_path:
@@ -466,4 +533,3 @@ class MultiDataset(Dataset):
 
     # def name(self):
     #     return 'DiverseDepth'
-

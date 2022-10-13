@@ -18,13 +18,18 @@ class RelDepthModel(nn.Module):
         self.losses = ModelLoss()
 
     def forward(self, data, is_train=True):
+        device = cfg.device
         # Input data is a_real, predicted data is b_fake, groundtruth is b_real
-        self.inputs = data['rgb'].cuda()
+        self.inputs = torch.cat((data["rgb"],
+                                 data["guide"],
+                                 data["m"]), dim=-1).to(device)
         self.logit, self.auxi = self.depth_model(self.inputs)
         if is_train:
-            self.losses_dict = self.losses.criterion(self.logit, self.auxi, data)
+            self.losses_dict = self.losses.criterion(
+                self.logit, self.auxi, data)
         else:
-            self.losses_dict = {'total_loss': torch.tensor(0.0, dtype=torch.float).cuda()}
+            self.losses_dict = {'total_loss': torch.tensor(
+                0.0, dtype=torch.float).to(device)}
         return {'decoder': self.logit, 'auxi': self.auxi, 'losses': self.losses_dict}
 
     def inference(self, data):
@@ -43,8 +48,9 @@ class ModelLoss(nn.Module):
         ################Loss for the main branch, i.e. on the depth map#################
         # Geometry Loss
         self.pn_plane = PWNPlanesLoss(focal_x=cfg.DATASET.FOCAL_X, focal_y=cfg.DATASET.FOCAL_Y,
-                                            input_size=cfg.DATASET.CROP_SIZE, sample_groups=5000, xyz_mode='xyz')
-        self.pn_edge = EdgeguidedNormalRegressionLoss(mask_value=-1e-8, max_threshold=10.1)
+                                      input_size=cfg.DATASET.CROP_SIZE, sample_groups=5000, xyz_mode='xyz')
+        self.pn_edge = EdgeguidedNormalRegressionLoss(
+            mask_value=-1e-8, max_threshold=10.1)
         # self.surface_normal_loss = SurfaceNormalLoss()
 
         # the scale can be adjusted
@@ -55,13 +61,14 @@ class ModelLoss(nn.Module):
 
         self.ranking_edge_loss = EdgeguidedRankingLoss(mask_value=-1e-8)
 
-
         ################Loss for the auxi branch, i.e. on the disp map#################
         # the scale can be adjusted
-        self.msg_normal_auxiloss = MSGIL_NORM_Loss(scale=4, valid_threshold=-1e-8)
+        self.msg_normal_auxiloss = MSGIL_NORM_Loss(
+            scale=4, valid_threshold=-1e-8)
 
         # Scale shift invariant. SSIMAEL_Loss is MIDAS loss. MEADSTD_TANH_NORM_Loss is our normalization loss.
-        self.meanstd_tanh_auxiloss = MEADSTD_TANH_NORM_Loss(valid_threshold=-1e-8)
+        self.meanstd_tanh_auxiloss = MEADSTD_TANH_NORM_Loss(
+            valid_threshold=-1e-8)
 
         self.ranking_edge_auxiloss = EdgeguidedRankingLoss(mask_value=-1e-8)
 
@@ -77,7 +84,7 @@ class ModelLoss(nn.Module):
     def auxi_loss(self, auxi, data):
         loss = {}
         if 'disp' not in data:
-            return {'total_loss': torch.tensor(0.0).cuda()}
+            return {'total_loss': torch.tensor(0.0).to(cfg.device)}
 
         gt_disp = data['disp'].to(device=auxi.device)
 
@@ -86,13 +93,16 @@ class ModelLoss(nn.Module):
         auxi_mid = auxi[mask_mid_quality]
 
         if '_ranking-edge-auxi_' in cfg.TRAIN.LOSS_MODE.lower():
-            loss['ranking-edge_auxiloss'] = self.ranking_edge_auxiloss(auxi, gt_disp, data['rgb'])
+            loss['ranking-edge_auxiloss'] = self.ranking_edge_auxiloss(
+                auxi, gt_disp, data['rgb'])
 
         if '_msgil-normal-auxi_' in cfg.TRAIN.LOSS_MODE.lower():
-            loss['msg_normal_auxiloss'] = (self.msg_normal_auxiloss(auxi_mid, gt_disp_mid) * 0.5).float()
+            loss['msg_normal_auxiloss'] = (
+                self.msg_normal_auxiloss(auxi_mid, gt_disp_mid) * 0.5).float()
 
         if '_meanstd-tanh-auxi_' in cfg.TRAIN.LOSS_MODE.lower():
-            loss['meanstd-tanh_auxiloss'] = self.meanstd_tanh_auxiloss(auxi_mid, gt_disp_mid)
+            loss['meanstd-tanh_auxiloss'] = self.meanstd_tanh_auxiloss(
+                auxi_mid, gt_disp_mid)
 
         total_loss = sum(loss.values())
         loss['total_loss'] = total_loss * cfg.TRAIN.LOSS_AUXI_WEIGHT
@@ -104,7 +114,7 @@ class ModelLoss(nn.Module):
         gt_depth = data['depth'].to(device=pred_depth.device)
 
         # High-quality data, except webstereo data
-        mask_high_quality = data['quality_flg'] ==3
+        mask_high_quality = data['quality_flg'] == 3
         mask_mid_quality = data['quality_flg'] >= 2
         # gt_depth_high = gt_depth[mask_high_quality]
         # pred_depth_high = pred_depth[mask_high_quality]
@@ -112,8 +122,7 @@ class ModelLoss(nn.Module):
         gt_depth_mid = gt_depth[mask_mid_quality]
         pred_depth_mid = pred_depth[mask_mid_quality]
 
-
-        #gt_depth_filter = data['mask_highquality']]
+        # gt_depth_filter = data['mask_highquality']]
         #pred_depth_filter = pred_depth[data['mask_highquality']]
         #focal_length_filter = data['focal_length'][data['mask_highquality']]
 
@@ -127,7 +136,8 @@ class ModelLoss(nn.Module):
 
         if '_pairwise-normal-regress-edge_' in cfg.TRAIN.LOSS_MODE.lower() or \
                 '_pairwise-normal-regress-plane_' in cfg.TRAIN.LOSS_MODE.lower():
-            pred_ssinv = recover_scale_shift_depth(pred_depth, gt_depth, min_threshold=-1e-8, max_threshold=10.1)
+            pred_ssinv = recover_scale_shift_depth(
+                pred_depth, gt_depth, min_threshold=-1e-8, max_threshold=10.1)
         else:
             pred_ssinv = None
 
@@ -156,12 +166,14 @@ class ModelLoss(nn.Module):
                 loss['meanstd-tanh_loss'] = pred_depth.sum() * 0.
 
         if '_ranking-edge_' in cfg.TRAIN.LOSS_MODE.lower():
-            loss['ranking-edge_loss'] = self.ranking_edge_loss(pred_depth, gt_depth, data['rgb'])
+            loss['ranking-edge_loss'] = self.ranking_edge_loss(
+                pred_depth, gt_depth, data['rgb'])
 
         # Multi-scale Gradient Loss
         if '_msgil-normal_' in cfg.TRAIN.LOSS_MODE.lower():
             if mask_mid_quality.sum():
-                loss['msg_normal_loss'] = (self.msg_normal_loss(pred_depth_mid, gt_depth_mid) * 0.5).float()
+                loss['msg_normal_loss'] = (self.msg_normal_loss(
+                    pred_depth_mid, gt_depth_mid) * 0.5).float()
             else:
                 loss['msg_normal_loss'] = pred_depth.sum() * 0.
 
@@ -238,8 +250,10 @@ def recover_scale_shift_depth(pred, gt, min_threshold=1e-8, max_threshold=1e8):
         mask_i = mask[i, ...]
         pred_valid_i = pred[i, ...][mask_i]
         ones_i = ones_img[mask_i]
-        pred_valid_ones_i = torch.stack((pred_valid_i, ones_i), dim=0)  # [c+1, n]
-        A_i = torch.matmul(pred_valid_ones_i, pred_valid_ones_i.permute(1, 0))  # [2, 2]
+        pred_valid_ones_i = torch.stack(
+            (pred_valid_i, ones_i), dim=0)  # [c+1, n]
+        A_i = torch.matmul(pred_valid_ones_i,
+                           pred_valid_ones_i.permute(1, 0))  # [2, 2]
         A_inverse = torch.inverse(A_i + EPS)
 
         gt_i = gt[i, ...][mask_i]
@@ -249,6 +263,7 @@ def recover_scale_shift_depth(pred, gt, min_threshold=1e-8, max_threshold=1e8):
     scale_shift_batch = torch.stack(scale_shift_batch, dim=0)  # [b, 2, 1]
     ones = torch.ones_like(pred)
     pred_ones = torch.cat((pred, ones), dim=1)  # [b, 2, h, w]
-    pred_scale_shift = torch.matmul(pred_ones.permute(0, 2, 3, 1).reshape(b, h * w, 2), scale_shift_batch)  # [b, h*w, 1]
+    pred_scale_shift = torch.matmul(pred_ones.permute(0, 2, 3, 1).reshape(
+        b, h * w, 2), scale_shift_batch)  # [b, h*w, 1]
     pred_scale_shift = pred_scale_shift.permute(0, 2, 1).reshape((b, c, h, w))
     return pred_scale_shift

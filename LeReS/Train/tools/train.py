@@ -25,9 +25,11 @@ from tools.parse_arg_val import ValOptions
 def main_process(dist, rank) -> bool:
     return not dist or (dist and rank == 0)
 
+
 def increase_sample_ratio_steps(step, base_ratio=0.1, step_size=10000):
     ratio = min(base_ratio * (int(step / step_size) + 1), 1.0)
     return ratio
+
 
 def reduce_loss_dict(loss_dict):
     """
@@ -61,14 +63,18 @@ def val(val_dataloader, model):
     print('validating...')
     smoothed_absRel = SmoothedValue(len(val_dataloader))
     smoothed_whdr = SmoothedValue(len(val_dataloader))
-    smoothed_criteria = {'err_absRel': smoothed_absRel, 'err_whdr': smoothed_whdr}
+    smoothed_criteria = {
+        'err_absRel': smoothed_absRel, 'err_whdr': smoothed_whdr}
     for i, data in enumerate(val_dataloader):
         out = model.module.inference(data)
         pred_depth = torch.squeeze(out['pred_depth'])
 
-        pred_depth_resize = cv2.resize(pred_depth.cpu().numpy(), (torch.squeeze(data['gt_depth']).shape[1], torch.squeeze(data['gt_depth']).shape[0]))
-        pred_depth_metric = recover_metric_depth(pred_depth_resize, data['gt_depth'])
-        smoothed_criteria = validate_rel_depth_err(pred_depth_metric, data['gt_depth'], smoothed_criteria, scale=1.0)
+        pred_depth_resize = cv2.resize(pred_depth.cpu().numpy(), (torch.squeeze(
+            data['gt_depth']).shape[1], torch.squeeze(data['gt_depth']).shape[0]))
+        pred_depth_metric = recover_metric_depth(
+            pred_depth_resize, data['gt_depth'])
+        smoothed_criteria = validate_rel_depth_err(
+            pred_depth_metric, data['gt_depth'], smoothed_criteria, scale=1.0)
     return {'abs_rel': smoothed_criteria['err_absRel'].GetGlobalAverageValue(),
             'whdr': smoothed_criteria['err_whdr'].GetGlobalAverageValue()}
 
@@ -79,7 +85,8 @@ def do_train(train_dataloader, val_dataloader, train_args,
              logger, tblogger=None):
     # training status for logging
     if save_to_disk:
-        training_stats = TrainingStats(train_args, cfg.TRAIN.LOG_INTERVAL, tblogger if train_args.use_tfboard else None)
+        training_stats = TrainingStats(
+            train_args, cfg.TRAIN.LOG_INTERVAL, tblogger if train_args.use_tfboard else None)
 
     dataloader_iterator = iter(train_dataloader)
     start_step = train_args.start_step
@@ -92,12 +99,16 @@ def do_train(train_dataloader, val_dataloader, train_args,
         for step in range(start_step, total_iters):
 
             if step % train_args.sample_ratio_steps == 0 and step != 0:
-                sample_ratio = increase_sample_ratio_steps(step, base_ratio=train_args.sample_start_ratio, step_size=train_args.sample_ratio_steps)
-                train_dataloader, curr_sample_size = MultipleDataLoaderDistributed(train_args, sample_ratio=sample_ratio)
+                sample_ratio = increase_sample_ratio_steps(
+                    step, base_ratio=train_args.sample_start_ratio, step_size=train_args.sample_ratio_steps)
+                train_dataloader, curr_sample_size = MultipleDataLoaderDistributed(
+                    train_args, sample_ratio=sample_ratio)
                 dataloader_iterator = iter(train_dataloader)
-                logger.info('Sample ratio: %02f, current sampled datasize: %d' % (sample_ratio, np.sum(curr_sample_size)))
+                logger.info('Sample ratio: %02f, current sampled datasize: %d' % (
+                    sample_ratio, np.sum(curr_sample_size)))
 
-            epoch = int(step * train_args.batchsize*train_args.world_size / train_datasize)
+            epoch = int(step * train_args.batchsize *
+                        train_args.world_size / train_datasize)
             if save_to_disk:
                 training_stats.IterTic()
 
@@ -133,7 +144,8 @@ def do_train(train_dataloader, val_dataloader, train_args,
             if save_to_disk:
                 training_stats.UpdateIterStats(loss_dict_reduced)
                 training_stats.IterToc()
-                training_stats.LogIterStats(step, epoch, optimizer.optimizer, val_err[0])
+                training_stats.LogIterStats(
+                    step, epoch, optimizer.optimizer, val_err[0])
 
             # validate the model
             if step % cfg.TRAIN.VAL_STEP == 0 and val_dataloader is not None and step != 0:
@@ -143,7 +155,8 @@ def do_train(train_dataloader, val_dataloader, train_args,
                 model.train()
             # save checkpoint
             if step % cfg.TRAIN.SNAPSHOT_ITERS == 0 and step != 0 and save_to_disk:
-                save_ckpt(train_args, step, epoch, model, optimizer.optimizer, scheduler, val_err[0])
+                save_ckpt(train_args, step, epoch, model,
+                          optimizer.optimizer, scheduler, val_err[0])
 
     except (RuntimeError, KeyboardInterrupt):
         stack_trace = traceback.format_exc()
@@ -169,9 +182,10 @@ def main_worker(local_rank: int, ngpus_per_node: int, train_args, val_args):
         except OSError as e:
             if e.errno != errno.EEXIST:
                 raise
-    logger = setup_distributed_logger("lib", log_output_dir, local_rank, cfg.TRAIN.RUN_NAME + '.txt')
+    logger = setup_distributed_logger(
+        "lib", log_output_dir, local_rank, cfg.TRAIN.RUN_NAME + '.txt')
     tblogger = None
-    if train_args.use_tfboard and  local_rank == 0:
+    if train_args.use_tfboard and local_rank == 0:
         from tensorboardX import SummaryWriter
         tblogger = SummaryWriter(cfg.TRAIN.LOG_DIR)
 
@@ -183,31 +197,33 @@ def main_worker(local_rank: int, ngpus_per_node: int, train_args, val_args):
                                 world_size=train_args.world_size,
                                 rank=train_args.global_rank)
 
-
     # load model
     model = RelDepthModel()
-    if train_args.world_size>1:
+    if train_args.world_size > 1:
         assert is_pytorch_1_1_0_or_later(), \
             "SyncBatchNorm is only available in pytorch >= 1.1.0"
         model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
         logger.info('Using SyncBN!')
 
-
     if train_args.distributed:
         model = torch.nn.parallel.DistributedDataParallel(
             model.cuda(), device_ids=[local_rank], output_device=local_rank)
     else:
-        model = torch.nn.DataParallel(model.cuda())
+        model = model.to(cfg.device)  # torch.nn.DataParallel(model.cuda())
 
-    val_err = [{'abs_rel': 0, 'whdr': 0}]
+    val_err = [{"abs_rel": 0, "whdr": 0}]
 
     # Print configs and logs
     print_options(train_args, logger)
 
     # training and validation dataloader
-    train_dataloader, train_sample_size = MultipleDataLoaderDistributed(train_args)
+    train_dataloader, train_sample_size = MultipleDataLoaderDistributed(
+        train_args)
     val_dataloader, val_sample_size = MultipleDataLoaderDistributed(val_args)
-    cfg.TRAIN.LR_SCHEDULER_MULTISTEPS = np.array(train_args.lr_scheduler_multiepochs) * math.ceil(np.sum(train_sample_size)/ (train_args.world_size * train_args.batchsize))
+    if train_args.world_size == 0:
+        train_args.world_size = 1
+    cfg.TRAIN.LR_SCHEDULER_MULTISTEPS = np.array(train_args.lr_scheduler_multiepochs) * math.ceil(
+        np.sum(train_sample_size) / (train_args.world_size * train_args.batchsize))
 
     # Optimizer
     optimizer = ModelOptimizer(model)
@@ -223,10 +239,11 @@ def main_worker(local_rank: int, ngpus_per_node: int, train_args, val_args):
         sample_ratio = increase_sample_ratio_steps(train_args.start_step, base_ratio=train_args.sample_start_ratio,
                                                    step_size=train_args.sample_ratio_steps)
         # reconstruct the train_dataloader with the new sample_ratio
-        train_dataloader, train_sample_size = MultipleDataLoaderDistributed(train_args, sample_ratio=sample_ratio)
+        train_dataloader, train_sample_size = MultipleDataLoaderDistributed(
+            train_args, sample_ratio=sample_ratio)
 
-
-    total_iters = math.ceil(np.sum(train_sample_size)/ (train_args.world_size * train_args.batchsize)) * train_args.epoch
+    total_iters = math.ceil(np.sum(
+        train_sample_size) / (train_args.world_size * train_args.batchsize)) * train_args.epoch
     cfg.TRAIN.MAX_ITER = total_iters
     cfg.TRAIN.GPU_NUM = train_args.world_size
     print_configs(cfg)
@@ -244,6 +261,7 @@ def main_worker(local_rank: int, ngpus_per_node: int, train_args, val_args):
              logger,
              tblogger)
 
+
 def main():
     # Train args
     train_opt = TrainOptions()
@@ -257,15 +275,18 @@ def main():
 
     # Validation datasets
     val_datasets = []
+    cfg.device = "mps"
     for dataset_name in val_args.dataset_list:
-        val_annos_path = osp.join(cfg.ROOT_DIR, val_args.dataroot, dataset_name, 'annotations', 'val_annotations.json')
+        val_annos_path = osp.join(
+            cfg.ROOT_DIR, val_args.dataroot, dataset_name, 'annotations', 'val_annotations.json')
         if not osp.exists(val_annos_path):
             continue
         with open(val_annos_path, 'r') as f:
             anno = json.load(f)[0]
             if 'depth_path' not in anno:
                 continue
-            depth_path_demo = osp.join(cfg.ROOT_DIR, val_args.dataroot, anno['depth_path'])
+            depth_path_demo = osp.join(
+                cfg.ROOT_DIR, val_args.dataroot, anno['depth_path'])
             depth_demo = cv2.imread(depth_path_demo, -1)
             if depth_demo is not None:
                 val_datasets.append(dataset_name)
@@ -281,10 +302,11 @@ def main():
     train_args.dist_url = train_args.dist_url + str(os.getpid() % 100).zfill(2)
 
     if train_args.distributed:
-        mp.spawn(main_worker, nprocs=ngpus_per_node, args=(ngpus_per_node, train_args, val_args))
+        mp.spawn(main_worker, nprocs=ngpus_per_node,
+                 args=(ngpus_per_node, train_args, val_args))
     else:
         main_worker(0, ngpus_per_node, train_args, val_args)
 
 
-if __name__=='__main__':
+if __name__ == '__main__':
     main()

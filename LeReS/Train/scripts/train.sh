@@ -3,10 +3,10 @@ export PYTHONPATH=../../Train:${PYTHONPATH}
 export CUDA_VISIBLE_DEVICES=0,1,2,3
 
 
-python ../tools/train.py \
+python3.9 ../tools/train.py \
 --dataroot datasets \
---backbone resnet50 \
---dataset_list taskonomy DiverseDepth HRWSI Holopix50k \
+--backbone resnext101 \
+--dataset_list DiverseDepth \
 --batchsize 16 \
 --base_lr 0.001 \
 --use_tfboard \
@@ -16,4 +16,5 @@ python ../tools/train.py \
 --lr_scheduler_multiepochs 10 25 40 \
 --val_step 5000 \
 --snapshot_iters 5000 \
---log_interval 10
+--log_interval 10 \
+--resume --load_ckpt ../resnext101.pth

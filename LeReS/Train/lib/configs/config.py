@@ -20,18 +20,20 @@ __C = AttrDict()
 cfg = __C
 
 # Root directory of project
-__C.ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+__C.ROOT_DIR = os.path.dirname(os.path.dirname(
+    os.path.dirname(os.path.abspath(__file__))))
 
 # ---------------------------------------------------------------------------- #
 # Data configurations
 # ---------------------------------------------------------------------------- #
 __C.DATASET = AttrDict()
 __C.DATASET.NAME = 'diversedepth'
-__C.DATASET.RGB_PIXEL_MEANS = (0.485, 0.456, 0.406)  # (102.9801, 115.9465, 122.7717)
+# (102.9801, 115.9465, 122.7717)
+__C.DATASET.RGB_PIXEL_MEANS = (0.485, 0.456, 0.406)
 __C.DATASET.RGB_PIXEL_VARS = (0.229, 0.224, 0.225)  # (1, 1, 1)
 # Scale the depth map
 #__C.DATASET.DEPTH_SCALE = 10.0
-__C.DATASET.CROP_SIZE = (448, 448)  # (height, width)
+__C.DATASET.CROP_SIZE = (512, 512)  # (height, width)
 
 # Camera Parameters
 __C.DATASET.FOCAL_X = 256.0
@@ -100,6 +102,7 @@ __C.TRAIN.LOSS_AUXI_WEIGHT = 0.5
 
 __C.TRAIN.OPTIM = 'SGD'
 
+
 def print_configs(cfg):
     import logging
     logger = logging.getLogger(__name__)
@@ -150,7 +153,7 @@ def merge_cfg_from_file(train_args):
     for k, v in vars(train_args).items():
         if k.upper() in __C.TRAIN.keys():
             __C.TRAIN[k.upper()] = getattr(train_args, k)
-    
+
     __C.TRAIN.LOG_DIR = os.path.join(__C.TRAIN.OUTPUT_DIR, cfg.TRAIN.RUN_NAME)
 
 

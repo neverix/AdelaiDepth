@@ -65,7 +65,7 @@ pip install --upgrade git+https://github.com/mit-han-lab/torchsparse.git@v1.2.0
     # run the ResNeXt-101
     python ./tools/test_shape.py --load_ckpt res101.pth --backbone resnext101
     ```
-
+   
 ## Training
 
 1. (Optional) Run a demo training to verify the python environment.
