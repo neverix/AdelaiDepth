@@ -1,7 +1,7 @@
 # To install dependencies: pip install numpy, open3d, opencv-python
 from matplotlib import pyplot as plt
 import numpy as np
-import open3d as o3d
+# import open3d as o3d
 from regex import D
 import scipy.spatial
 import numba as nb

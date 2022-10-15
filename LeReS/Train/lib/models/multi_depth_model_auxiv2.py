@@ -22,7 +22,7 @@ class RelDepthModel(nn.Module):
         # Input data is a_real, predicted data is b_fake, groundtruth is b_real
         self.inputs = torch.cat((data["rgb"],
                                  data["guide"],
-                                 data["m"]), dim=-1).to(device)
+                                 data["m"].unsqueeze(1)), dim=1).to(device)
         self.logit, self.auxi = self.depth_model(self.inputs)
         if is_train:
             self.losses_dict = self.losses.criterion(
@@ -83,8 +83,8 @@ class ModelLoss(nn.Module):
 
     def auxi_loss(self, auxi, data):
         loss = {}
-        if 'disp' not in data:
-            return {'total_loss': torch.tensor(0.0).to(cfg.device)}
+        #if 'disp' not in data:
+        return {'total_loss': torch.tensor(0.0).to(cfg.device)}
 
         gt_disp = data['disp'].to(device=auxi.device)
 
@@ -216,13 +216,17 @@ class ModelOptimizer(object):
         ]
         self.optimizer = torch.optim.SGD(net_params, momentum=0.9)
         self.model = model
+        self.grad_acc = 16
+        self.step = 0
 
     def optim(self, loss):
-        self.optimizer.zero_grad()
         loss_all = loss['total_loss']
         loss_all.backward()
-        torch.nn.utils.clip_grad_norm_(self.model.parameters(), 10)
-        self.optimizer.step()
+        if self.step % self.grad_acc == self.grad_acc - 1:
+            torch.nn.utils.clip_grad_norm_(self.model.parameters(), 10)
+            self.optimizer.step()
+            self.optimizer.zero_grad()
+        self.step += 1
 
 
 class DepthModel(nn.Module):
@@ -231,16 +235,17 @@ class DepthModel(nn.Module):
         backbone = network.__name__.split('.')[-1] + '.' + cfg.MODEL.ENCODER
         self.encoder_modules = get_func(backbone)()
         self.decoder_modules = network.Decoder()
-        self.auxi_modules = network.AuxiNetV2()
+        #self.auxi_modules = network.AuxiNetV2()
 
     def forward(self, x):
         lateral_out = self.encoder_modules(x)
         out_logit, auxi_input = self.decoder_modules(lateral_out)
-        out_auxi = self.auxi_modules(auxi_input)
-        return out_logit, out_auxi
+        #out_auxi = self.auxi_modules(auxi_input)
+        return out_logit, out_logit  # out_auxi
 
 
-def recover_scale_shift_depth(pred, gt, min_threshold=1e-8, max_threshold=1e8):
+@torch.jit.script
+def recover_scale_shift_depth(pred: torch.FloatTensor, gt: torch.FloatTensor, min_threshold: float = 1e-8, max_threshold: float = 1e8):
     b, c, h, w = pred.shape
     mask = (gt > min_threshold) & (gt < max_threshold)  # [b, c, h, w]
     EPS = 1e-6 * torch.eye(2, dtype=pred.dtype, device=pred.device)
@@ -254,15 +259,14 @@ def recover_scale_shift_depth(pred, gt, min_threshold=1e-8, max_threshold=1e8):
             (pred_valid_i, ones_i), dim=0)  # [c+1, n]
         A_i = torch.matmul(pred_valid_ones_i,
                            pred_valid_ones_i.permute(1, 0))  # [2, 2]
-        A_inverse = torch.inverse(A_i + EPS)
+        A_inverse = torch.inverse((A_i + EPS).float()).type(A_i.dtype)
 
         gt_i = gt[i, ...][mask_i]
         B_i = torch.matmul(pred_valid_ones_i, gt_i)[:, None]  # [2, 1]
         scale_shift_i = torch.matmul(A_inverse, B_i)  # [2, 1]
         scale_shift_batch.append(scale_shift_i)
     scale_shift_batch = torch.stack(scale_shift_batch, dim=0)  # [b, 2, 1]
-    ones = torch.ones_like(pred)
-    pred_ones = torch.cat((pred, ones), dim=1)  # [b, 2, h, w]
+    pred_ones = torch.cat((pred, pred * 0 + 1), dim=1)  # [b, 2, h, w]
     pred_scale_shift = torch.matmul(pred_ones.permute(0, 2, 3, 1).reshape(
         b, h * w, 2), scale_shift_batch)  # [b, h*w, 1]
     pred_scale_shift = pred_scale_shift.permute(0, 2, 1).reshape((b, c, h, w))

@@ -6,6 +6,7 @@ import os.path as osp
 import json
 import torch.distributed as dist
 import torch.multiprocessing as mp
+from torch.profiler import profile, ProfilerActivity
 
 from multiprocessing.sharedctypes import Value
 from data.load_dataset_distributed import MultipleDataLoaderDistributed
@@ -95,6 +96,7 @@ def do_train(train_dataloader, val_dataloader, train_args,
 
     pytorch_1_1_0_or_later = is_pytorch_1_1_0_or_later()
     tmp_i = 0
+    torch.backends.cudnn.benchmark = True
     try:
         for step in range(start_step, total_iters):
 
@@ -112,6 +114,11 @@ def do_train(train_dataloader, val_dataloader, train_args,
             if save_to_disk:
                 training_stats.IterTic()
 
+            import gc
+            gc.collect()
+            torch.cuda.empty_cache()
+            model.zero_grad(set_to_none=True)
+            
             # get the next data batch
             try:
                 data = next(dataloader_iterator)
@@ -119,8 +126,12 @@ def do_train(train_dataloader, val_dataloader, train_args,
                 dataloader_iterator = iter(train_dataloader)
                 data = next(dataloader_iterator)
 
-            out = model(data)
-            losses_dict = out['losses']
+            with profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                profile_memory=True, record_shapes=True) as prof:
+                out = model(data)
+            print(prof.key_averages().table(sort_by="cuda_memory_usage", row_limit=10))
+            
+            losses_dict = out["losses"]
             optimizer.optim(losses_dict)
 
             #################Check data loading######################
@@ -275,7 +286,7 @@ def main():
 
     # Validation datasets
     val_datasets = []
-    cfg.device = "mps"
+    cfg.device = "cuda:0"  # "mps"
     for dataset_name in val_args.dataset_list:
         val_annos_path = osp.join(
             cfg.ROOT_DIR, val_args.dataroot, dataset_name, 'annotations', 'val_annotations.json')

@@ -56,7 +56,8 @@ def sub2ind(r, c, cols):
     return idx
 
 def edgeGuidedSampling(inputs, targets, edges_img, thetas_img, masks, h, w):
-
+    dev = inputs.device
+    
     # find edges
     edges_max = edges_img.max()
     edges_mask = edges_img.ge(edges_max*0.1)
@@ -69,17 +70,21 @@ def edgeGuidedSampling(inputs, targets, edges_img, thetas_img, masks, h, w):
 
     # find anchor points (i.e, edge points)
     sample_num = minlen
-    index_anchors = torch.randint(0, minlen, (sample_num,), dtype=torch.long).cuda()
-    anchors = torch.gather(inputs_edge, 0, index_anchors)
-    theta_anchors = torch.gather(thetas_edge, 0, index_anchors)
+    index_anchors = torch.randint(0, minlen, (sample_num,), dtype=torch.long).to(dev)
+    anchors = torch.gather(inputs_edge.to(dev), 0, index_anchors.to(dev))
+    theta_anchors = torch.gather(thetas_edge.to(dev), 0, index_anchors.to(dev))
     row_anchors, col_anchors = ind2sub(edges_loc[index_anchors].squeeze(1), w)
     ## compute the coordinates of 4-points,  distances are from [2, 30]
-    distance_matrix = torch.randint(2, 31, (4,sample_num)).cuda()
-    pos_or_neg = torch.ones(4, sample_num).cuda()
+    distance_matrix = torch.randint(2, 31, (4,sample_num)).to(dev)
+    pos_or_neg = torch.ones(4, sample_num).to(dev)
     pos_or_neg[:2,:] = -pos_or_neg[:2,:]
     distance_matrix = distance_matrix.float() * pos_or_neg
-    col = col_anchors.unsqueeze(0).expand(4, sample_num).long() + torch.round(distance_matrix.double() * torch.cos(theta_anchors).unsqueeze(0)).long()
-    row = row_anchors.unsqueeze(0).expand(4, sample_num).long() + torch.round(distance_matrix.double() * torch.sin(theta_anchors).unsqueeze(0)).long()
+    col = col_anchors.unsqueeze(0).expand(4, sample_num).long().to(dev) + torch.round(distance_matrix
+                                                                              #.double()
+                                                                              * torch.cos(theta_anchors).unsqueeze(0)).long().to(dev)
+    row = row_anchors.unsqueeze(0).expand(4, sample_num).long().to(dev) + torch.round(distance_matrix
+                                                                              #.double()
+                                                                              * torch.sin(theta_anchors).unsqueeze(0)).long().to(dev)
 
     # constrain 0=<c<=w, 0<=r<=h
     # Note: index should minus 1
@@ -93,8 +98,8 @@ def edgeGuidedSampling(inputs, targets, edges_img, thetas_img, masks, h, w):
     b = sub2ind(row[1,:], col[1,:], w)
     c = sub2ind(row[2,:], col[2,:], w)
     d = sub2ind(row[3,:], col[3,:], w)
-    A = torch.cat((a,b,c), 0)
-    B = torch.cat((b,c,d), 0)
+    A = torch.cat((a,b,c), 0)  # .cuda()
+    B = torch.cat((b,c,d), 0)  # .cuda()
 
     inputs_A = torch.gather(inputs, 0, A.long())
     inputs_B = torch.gather(inputs, 0, B.long())
@@ -119,12 +124,13 @@ class EdgeguidedRankingLoss(nn.Module):
         #self.regularization_loss = GradientLoss(scales=4)
 
     def getEdge(self, images):
+        images = images.cuda()
         n,c,h,w = images.size()
         a = torch.Tensor([[-1, 0, 1], [-2, 0, 2], [-1, 0, 1]]).cuda().view((1,1,3,3)).repeat(1, 1, 1, 1)
         b = torch.Tensor([[1, 2, 1], [0, 0, 0], [-1, -2, -1]]).cuda().view((1,1,3,3)).repeat(1, 1, 1, 1)
         if c == 3:
-            gradient_x = F.conv2d(images[:,0,:,:].unsqueeze(1), a)
-            gradient_y = F.conv2d(images[:,0,:,:].unsqueeze(1), b)
+            gradient_x = F.conv2d(images[:,0,:,:].unsqueeze(1).cuda(), a)
+            gradient_y = F.conv2d(images[:,0,:,:].unsqueeze(1).cuda(), b)
         else:
             gradient_x = F.conv2d(images, a)
             gradient_y = F.conv2d(images, b)
@@ -145,19 +151,20 @@ class EdgeguidedRankingLoss(nn.Module):
 
         #=============================
         n,c,h,w = targets.size()
+        x = torch.FloatTensor
         if n != 1:
-            inputs = inputs.view(n, -1).double()
-            targets = targets.view(n, -1).double()
-            masks = masks.view(n, -1).double()
-            edges_img = edges_img.view(n, -1).double()
-            thetas_img = thetas_img.view(n, -1).double()
+            inputs = inputs.view(n, -1).type(x)
+            targets = targets.view(n, -1).type(x)
+            masks = masks.view(n, -1).type(x)
+            edges_img = edges_img.view(n, -1).type(x)
+            thetas_img = thetas_img.view(n, -1).type(x)
 
         else:
-            inputs = inputs.contiguous().view(1, -1).double()
-            targets = targets.contiguous().view(1, -1).double()
-            masks = masks.contiguous().view(1, -1).double()
-            edges_img = edges_img.contiguous().view(1, -1).double()
-            thetas_img = thetas_img.contiguous().view(1, -1).double()
+            inputs = inputs.contiguous().view(1, -1).type(x)
+            targets = targets.contiguous().view(1, -1).type(x)
+            masks = masks.contiguous().view(1, -1).type(x)
+            edges_img = edges_img.contiguous().view(1, -1).type(x)
+            thetas_img = thetas_img.contiguous().view(1, -1).type(x)
 
         # initialization
         loss = torch.DoubleTensor([0.0]).cuda()
@@ -188,8 +195,8 @@ class EdgeguidedRankingLoss(nn.Module):
             # consider forward-backward consistency checking, i.e, only compute losses of point pairs with valid GT
             consistency_mask = masks_A * masks_B
 
-            equal_loss = (inputs_A - inputs_B).pow(2) * mask_eq.double() * consistency_mask
-            unequal_loss = torch.log(1 + torch.exp((-inputs_A + inputs_B) * labels)) * (~mask_eq).double() * consistency_mask
+            equal_loss = (inputs_A - inputs_B).pow(2) * mask_eq.type(x) * consistency_mask
+            unequal_loss = torch.log(1 + torch.exp((-inputs_A + inputs_B) * labels)) * (~mask_eq).type(x) * consistency_mask
 
             # Please comment the regularization term if you don't want to use the multi-scale gradient matching loss !!!
             loss = loss + self.alpha * equal_loss.mean() + 1.0 * unequal_loss.mean() #+ 0.2 * regularization_loss.double()

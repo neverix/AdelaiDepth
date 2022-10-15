@@ -2,7 +2,6 @@
 *.pth
 *output*
 *.zip
-log*
 LeReS/download
 LeReS/pbcopy
 LeReS/Train/datasets/

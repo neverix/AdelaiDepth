@@ -9,6 +9,7 @@ import torch.nn as nn
 import torch.nn.init as init
 import torch.nn.functional as F
 
+from functools import partial
 from lib.configs.config import cfg
 from lib.models import Resnet, Resnext_torch
 
@@ -232,6 +233,15 @@ class Decoder(nn.Module):
         return x, auxi_input
 
 
+class Checkpointer(nn.Module):
+    def __init__(self, x):
+        super().__init__()
+        self.x = x
+    
+    def forward(self, *args, **kwargs):
+        return torch.utils.checkpoint.checkpoint(self.x, *args, **kwargs)
+
+
 class DepthNet(nn.Module):
     __factory = {
         18: Resnet.resnet18,
@@ -272,6 +282,9 @@ class DepthNet(nn.Module):
         self.encoder.conv1 = nn.Conv2d(5, self.encoder.conv1.out_channels,
                                        kernel_size=self.encoder.conv1.kernel_size, stride=self.encoder.conv1.stride,
                                        padding=self.encoder.conv1.padding, bias=True)
+        for k in ["layer1", "layer2", "layer3", "layer4"]:
+            layer = getattr(self.encoder, k)
+            layer.forward = partial((lambda fwd, *args, **kwargs: torch.utils.checkpoint.checkpoint(fwd, *args, **kwargs)), layer.forward)
 
     def forward(self, x):
         x = self.encoder(x)  # 1/32, 1/16, 1/8, 1/4
