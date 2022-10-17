@@ -83,8 +83,8 @@ class ModelLoss(nn.Module):
 
     def auxi_loss(self, auxi, data):
         loss = {}
-        #if 'disp' not in data:
-        return {'total_loss': torch.tensor(0.0).to(cfg.device)}
+        if 'disp' not in data:
+            return {'total_loss': torch.tensor(0.0).to(cfg.device)}
 
         gt_disp = data['disp'].to(device=auxi.device)
 
@@ -216,7 +216,7 @@ class ModelOptimizer(object):
         ]
         self.optimizer = torch.optim.SGD(net_params, momentum=0.9)
         self.model = model
-        self.grad_acc = 16
+        self.grad_acc = 1  # 6
         self.step = 0
 
     def optim(self, loss):
@@ -235,13 +235,13 @@ class DepthModel(nn.Module):
         backbone = network.__name__.split('.')[-1] + '.' + cfg.MODEL.ENCODER
         self.encoder_modules = get_func(backbone)()
         self.decoder_modules = network.Decoder()
-        #self.auxi_modules = network.AuxiNetV2()
+        self.auxi_modules = network.AuxiNetV2()
 
     def forward(self, x):
         lateral_out = self.encoder_modules(x)
         out_logit, auxi_input = self.decoder_modules(lateral_out)
-        #out_auxi = self.auxi_modules(auxi_input)
-        return out_logit, out_logit  # out_auxi
+        out_auxi = self.auxi_modules(auxi_input)
+        return out_logit, out_auxi
 
 
 @torch.jit.script

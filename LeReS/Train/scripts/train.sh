@@ -7,7 +7,7 @@ python3 tools/train.py \
 --dataroot datasets \
 --backbone resnext101 \
 --dataset_list DiverseDepth \
---batchsize 1 \
+--batchsize 16 \
 --base_lr 0.001 \
 --use_tfboard \
 --thread 4 \
